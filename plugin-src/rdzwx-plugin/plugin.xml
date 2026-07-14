@@ -74,6 +74,13 @@
         <edit-config file="*-Info.plist" mode="merge" target="com.apple.security.get-task-allow">
             <true/>
         </edit-config>
+        <!-- Let users drop .mbtiles map files into the app folder via the Files app -->
+        <edit-config file="*-Info.plist" mode="merge" target="UIFileSharingEnabled">
+            <true/>
+        </edit-config>
+        <edit-config file="*-Info.plist" mode="merge" target="LSSupportsOpeningDocumentsInPlace">
+            <true/>
+        </edit-config>
         <header-file src="src/ios/RdzWx.h" />
         <source-file src="src/ios/RdzWx.m" />
         <source-file src="src/ios/JsonRdzHandler.h" />
@@ -90,6 +97,8 @@
         <framework src="CoreLocation.framework" />
         <framework src="Network.framework" weak="true" />
         <framework src="MapKit.framework" />
+        <framework src="libsqlite3.tbd" />
+        <framework src="UniformTypeIdentifiers.framework" weak="true" />
     </platform>
 </plugin>
 

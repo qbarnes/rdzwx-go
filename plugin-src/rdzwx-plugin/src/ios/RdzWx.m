@@ -11,6 +11,15 @@
 #import "WgsToEgm.h"
 #import "OfflineTileCache.h"
 #import <Cordova/CDVPluginResult.h>
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140000
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#endif
+
+static NSString *const kOfflineMapBookmarkKey = @"offlineMapBookmark";
+
+@interface RdzWx ()
+@property (nonatomic, strong) NSString *selstorageCallbackId;
+@end
 
 @implementation RdzWx
 
@@ -30,8 +39,66 @@
     [self.mdnsHandler initializeWithPlugin:self];
     [self.wgsToEgm initializeWithPlugin:self];
     [self.offlineTileCache initializeWithPlugin:self];
-    
+
+    [self restoreOfflineMap];
+
     NSLog(@"RdzWx plugin initialized");
+}
+
+// Reopen the offline map chosen in a previous session (mirrors the Android
+// SharedPreferences restore in rdzwx.kt pluginInitialize).
+- (void)restoreOfflineMap {
+    NSData* bookmark = [[NSUserDefaults standardUserDefaults] dataForKey:kOfflineMapBookmarkKey];
+    if (!bookmark) return;
+
+    BOOL stale = NO;
+    NSError* error = nil;
+    NSURL* url = [NSURL URLByResolvingBookmarkData:bookmark
+                                           options:NSURLBookmarkResolutionWithoutUI
+                                     relativeToURL:nil
+                               bookmarkDataIsStale:&stale
+                                             error:&error];
+    if (!url) {
+        NSLog(@"RdzWx: stored offline map bookmark no longer resolves: %@", error.localizedDescription);
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:kOfflineMapBookmarkKey];
+        return;
+    }
+    [self openOfflineMapAtURL:url savingBookmark:stale callbackId:nil];
+}
+
+- (void)openOfflineMapAtURL:(NSURL*)url savingBookmark:(BOOL)saveBookmark callbackId:(NSString*)callbackId {
+    NSError* error = nil;
+    BOOL ok = [self.offlineTileCache openMapFileAtURL:url error:&error];
+
+    if (ok && saveBookmark) {
+        // The tile cache holds security-scoped access to the URL at this
+        // point, so the bookmark can be created for open-in-place files.
+        NSError* bmError = nil;
+        NSData* bookmark = [url bookmarkDataWithOptions:0
+                         includingResourceValuesForKeys:nil
+                                          relativeToURL:nil
+                                                  error:&bmError];
+        if (bookmark) {
+            [[NSUserDefaults standardUserDefaults] setObject:bookmark forKey:kOfflineMapBookmarkKey];
+        } else {
+            NSLog(@"RdzWx: cannot create bookmark for %@: %@", url, bmError.localizedDescription);
+        }
+    }
+
+    if (callbackId) {
+        CDVPluginResult* result;
+        if (ok) {
+            result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK
+                                       messageAsString:url.lastPathComponent];
+        } else {
+            result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                       messageAsString:error.localizedDescription];
+        }
+        [self.commandDelegate sendPluginResult:result callbackId:callbackId];
+    }
+    if (!ok) {
+        NSLog(@"RdzWx: cannot open offline map %@: %@", url, error.localizedDescription);
+    }
 }
 
 - (void)start:(CDVInvokedUrlCommand*)command {
@@ -138,12 +205,46 @@
 
 - (void)selstorage:(CDVInvokedUrlCommand*)command {
     NSString* type = [command.arguments objectAtIndex:0];
-    
-    // iOS implementation will use document picker
-    // For now, return success - will implement document picker later
-    CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK 
-                                              messageAsString:@"Storage selection not yet implemented"];
-    [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+
+    if (![type isEqualToString:@"map"]) {
+        CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                                    messageAsString:@"Map themes are not supported on iOS (raster MBTiles only)"];
+        [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+        return;
+    }
+
+    self.selstorageCallbackId = command.callbackId;
+
+    // .mbtiles has no system UTType, so accept any file and validate on open
+    UIDocumentPickerViewController* picker;
+    if (@available(iOS 14.0, *)) {
+        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeItem]];
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.data", @"public.item"]
+                                                                        inMode:UIDocumentPickerModeOpen];
+#pragma clang diagnostic pop
+    }
+    picker.delegate = self;
+    [self.viewController presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+    NSString* callbackId = self.selstorageCallbackId;
+    self.selstorageCallbackId = nil;
+    NSURL* url = urls.firstObject;
+    if (!url) return;
+    [self openOfflineMapAtURL:url savingBookmark:YES callbackId:callbackId];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController*)controller {
+    NSString* callbackId = self.selstorageCallbackId;
+    self.selstorageCallbackId = nil;
+    if (!callbackId) return;
+    CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                                messageAsString:@"cancelled"];
+    [self.commandDelegate sendPluginResult:result callbackId:callbackId];
 }
 
 - (void)mdnsUpdateDiscovery:(CDVInvokedUrlCommand*)command {

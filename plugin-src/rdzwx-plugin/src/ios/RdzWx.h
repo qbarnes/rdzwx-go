@@ -6,6 +6,7 @@
 
 #import <Cordova/CDVPlugin.h>
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 @class JsonRdzHandler;
 @class GPSHandler;
@@ -13,7 +14,7 @@
 @class WgsToEgm;
 @class OfflineTileCache;
 
-@interface RdzWx : CDVPlugin
+@interface RdzWx : CDVPlugin <UIDocumentPickerDelegate>
 
 @property (nonatomic, strong) JsonRdzHandler *jsonrdzHandler;
 @property (nonatomic, strong) GPSHandler *gpsHandler;

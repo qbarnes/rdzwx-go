@@ -4,271 +4,92 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**rdzwx-go** is a hybrid mobile application for radiosonde (weather balloon) tracking and visualization built with Apache Cordova. The project consists of two main components:
+**rdzwx-go** is a hybrid Apache Cordova app for tracking radiosondes (weather balloons) via the rdz-ttgo-sonde firmware running on TTGO ESP32 hardware. The Cordova application lives at the **repo root** (`www/`, `config.xml`); the custom native plugin lives in `plugin-src/rdzwx-plugin/` and is installed from there as a `file:` dependency with plugin ID `rdzwx-plugin`.
 
-- **rdzwx-go/**: Main Cordova application (HTML/JS frontend)
-- **rdzwx-plugin/**: Custom native plugin (Kotlin for Android, Objective-C for iOS, Node.js for Electron)
+Platforms: Android (primary, Kotlin), iOS (Objective-C, mostly ported), Electron (desktop testing, Node.js).
 
-## Common Development Commands
+## Common Commands
 
-### Build Commands (from Makefile)
 ```bash
-make run          # Build and deploy to Android device
-make full         # Clean rebuild with plugin reinstall (use when plugin changes)
-make plugin       # Reinstall plugin only
-make el           # Build for Electron platform
-make release      # Create signed release APK
+# Initial setup
+npm install
+cordova prepare
+
+# Makefile targets
+make run          # cordova run android --device
+make plugin       # Remove + re-add rdzwx-plugin (required after plugin changes)
+make full         # plugin + run
+make el           # Build for Electron
+make release      # Signed release APK (needs decrypted my-release-key.jks)
+
+# Direct Cordova
+cordova build                  # Debug build (all installed platforms)
+cordova build android
+cordova build ios              # Requires macOS/Xcode
+cordova run android --device
 ```
 
-### Core Cordova Commands
+The Makefile hardcodes `ANDROID_HOME ?= /Users/hansr/Library/Android/sdk`; on other machines set it in the environment or `make ANDROID_HOME=/path/to/sdk ...`.
+
+There is no unit test suite (`npm test` is a stub). Testing is done by deploying to a device/emulator, or against the simulator below.
+
+### TTGO Simulator (test without hardware)
+
+`ttgo_simulator.py` emulates a TTGO device: advertises `_jsonrdz._tcp` via mDNS, serves the JSON protocol over TCP (default port 12345), and replays balloon flights (built-in sample, or `--flight file.csv|file.json`, `--speed N`, `--loop`). Requires `pip install zeroconf`. See SIMULATOR.md.
+
+## Critical Gotcha: Plugin Changes
+
+`cordova build` does **not** pick up changes made in `plugin-src/rdzwx-plugin/` — plugin source is copied into `platforms/` at plugin-install time. After any native plugin change (Kotlin/ObjC/Electron/`plugin.xml`/`www/rdzwx.js`), reinstall the plugin first:
+
 ```bash
-cordova build                    # Build debug version
-cordova build --release         # Build release version  
-cordova run android --device    # Deploy to Android device
-cordova run ios --device        # Deploy to iOS device (requires Xcode on macOS)
-cordova platform add android    # Add Android platform
-cordova platform add ios        # Add iOS platform
-cordova plugin add plugin-src/rdzwx-plugin/  # Add custom plugin
-```
-
-### Development Setup
-```bash
-# Initial setup after clone
-cordova platform add android
-cordova platform add ios        # iOS platform (requires macOS)
-npm i jetifier && npx jetifier    # For AndroidX compatibility
-```
-
-### Android Emulator Commands
-```bash
-# List available AVDs
-emulator -list-avds
-
-# Run emulator with optimized settings (hardware GPU acceleration)
-emulator -avd <avd_name> -gpu host -no-audio
-
-# Run with snapshots for faster boot (recommended after initial setup)
-emulator -avd <avd_name> -gpu host
-
-# Note: KVM acceleration is automatically used on Linux if available
-# CPU usage is high during boot (~300%) but drops to ~30% after boot completes
+make plugin        # cordova plugin rm rdzwx-plugin && cordova plugin add plugin-src/rdzwx-plugin/ --link
 ```
 
 ## Architecture
 
-### Multi-Platform Hybrid Architecture
-- **Frontend**: HTML5/JavaScript with Leaflet.js mapping in `rdzwx-go/www/`
-- **Native Layer**: Custom Cordova plugin bridges JS to native functionality
-- **Android Implementation**: Kotlin with Mapsforge offline mapping libraries
-- **iOS Implementation**: Objective-C with Core Location, Network.framework, and NSNetServiceBrowser
-- **Electron Implementation**: Node.js for desktop platform
+### JS ↔ Native bridge
 
-### Key Technologies
-- Apache Cordova v9.0.0+ for hybrid mobile framework
-- Leaflet.js for interactive mapping
-- Kotlin for Android native implementation
-- Objective-C for iOS native implementation
-- Mapsforge v0.16.0 for offline map rendering (Android)
-- mDNS/Bonjour for automatic device discovery
+- `www/js/index.js` — entire frontend app (~1000 lines): Leaflet map, sonde markers, info box, landing prediction (Tawhiri via `RdzWx.fetchUrl`).
+- `plugin-src/rdzwx-plugin/www/rdzwx.js` — plugin JS interface, exposed as global `RdzWx` with methods: `start`, `stop`, `closeconn`, `showmap`, `wgstoegm`, `gettile`, `selstorage`, `mdnsUpdateDiscovery`, `fetchUrl`.
 
-## Project Structure
+### Data flow
 
-### Main Application (`rdzwx-go/`)
-- `www/`: Web frontend assets (HTML, JS, CSS, images)
-- `www/js/index.js`: Main application logic
-- `config.xml`: Cordova configuration
-- `platforms/android/`: Generated Android platform code
-- `platforms/ios/`: Generated iOS platform code (Xcode project)
+1. `RdzWx.start(arg, callBack)` registers a long-lived native→JS callback (`callBack` in index.js).
+2. Native side discovers the TTGO via mDNS (`_jsonrdz._tcp`) or manual IP:port, opens a TCP connection, and streams newline-delimited JSON.
+3. Each message arrives in `callBack` → `update(obj)`. Messages with a `msgtype` field are status updates (`ttgostatus`, `gps`, `mdnsstatus`); anything else is sonde telemetry (id, lat/lon/alt, validPos/validId bitmasks, `res` result code).
+4. GPS positions are posted back to the TTGO over the same socket. `periodicStatusCheck()` closes the connection after 10s of silence.
 
-### Custom Plugin (`rdzwx-plugin/`)
-- `src/android/`: Kotlin native implementation with AIDL interfaces
-- `src/android/libs/`: JAR dependencies (Mapsforge, AndroidSVG)
-- `src/ios/`: Objective-C native implementation for iOS
-- `src/electron/`: Node.js/Electron implementation
-- `www/rdzwx.js`: Plugin JavaScript interface
-- `plugin.xml`: Plugin configuration
+### Offline maps
 
-## Development Workflow
+Leaflet uses a custom tile layer that calls `RdzWx.gettile(x, y, z)`; the result's `tile` field is used directly as the `<img>` src. On Android, Mapsforge (JARs in `plugin-src/rdzwx-plugin/src/android/libs/`) renders tiles from user-selected `.map` files and returns `file://` PNG paths. On iOS, `OfflineTileCache.m` reads raster **MBTiles** files (sqlite, TMS row order) and returns base64 `data:` URIs (WKWebView blocks `file://` images); it overzooms up to 6 levels past the file's max zoom. The iOS map file is chosen via a `UIDocumentPickerViewController` (open-in-place, persisted as an `NSUserDefaults` bookmark) or dropped into the app folder via the Files app. `tools/make_test_mbtiles.py` generates a synthetic MBTiles for testing; see OFFLINE_MAPS_IOS.md.
 
-1. **Quick Development**: Use `make run` for frontend changes
-2. **Plugin Changes**: Use `make full` when modifying native plugin code
-3. **Testing**: Deploy to physical Android device or emulator
-4. **Prerequisites**: Java 17, Android SDK (API 34+, build-tools 35.0.0), Node.js, Cordova CLI
+### Native implementations
 
-### iOS Development Workflow
-**IMPORTANT**: Plugin changes require reinstalling the plugin, not just building:
+- **Android** (`src/android/`): `rdzwx.kt` (plugin entry point, TCP/JSON-RDZ handling, mDNS, GPS, tile serving) and `rdzwx-a.kt`; AIDL interface in `Result.aidl`, enabled via `build-extras.gradle` (AGP 8+ disables AIDL by default).
+- **iOS** (`src/ios/`): one Objective-C class per concern — `RdzWx` (plugin entry), `JsonRdzHandler` (TCP), `GPSHandler` (Core Location), `MDNSHandler` (Bonjour), `WgsToEgm`, `OfflineTileCache` (stub).
+- **Electron** (`src/electron/RdzWx.js`).
 
-```bash
-# After making changes to iOS plugin code in rdzwx-plugin/
-cd rdzwx-go
-cordova plugin remove de-dl9rdz-rdzwx && cordova plugin add plugin-src/rdzwx-plugin/
-cordova build ios    # Rebuild iOS app with updated plugin
-# Then test in Xcode or simulator
-```
+### Build hooks (files not in git are generated)
 
-**Note**: `cordova build ios` alone does NOT copy plugin changes from `rdzwx-plugin/` to `platforms/ios/`. You must reinstall the plugin first.
+- `hooks/copy_version.js` (before_prepare): converts `version.json` → `www/version.js`, which sets `window.APP_VERSION`; the app compares it against the GitHub-hosted `version.json` to offer updates.
+- `plugin-src/rdzwx-plugin/scripts/fetch-egm96.js` (before_plugin_install): downloads the EGM96 geoid grid `WW15MGH.DAC` (used for WGS84→EGM96 altitude conversion) into `src/android/assets/`.
 
-### macOS Environment Setup
+## Build Requirements
 
-Required environment variables (add to `~/.zshrc`):
-
-```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
-export ANDROID_HOME=$HOME/Library/Android/sdk
-export PATH="$PATH:$ANDROID_HOME/tools:$ANDROID_HOME/platform-tools:/opt/homebrew/bin"
-```
-
-Install dependencies:
-```bash
-brew install openjdk@17 gradle nvm
-brew install --cask android-studio
-nvm install --lts
-npm install -g cordova
-```
-
-### Android Build Requirements (cordova-android 14.x)
-
-- **compileSdkVersion**: 35 (required by bundled AndroidX libraries)
-- **targetSdkVersion**: 34 (Google Play requirement)
-- **Kotlin**: 1.8.22+ (avoids duplicate class conflicts)
-- **AIDL**: Enabled via `build-extras.gradle` in plugin (AGP 8.0+ disables by default)
+- Java 17, Node.js, Cordova CLI, Android SDK API 35 / build-tools 35.0.0
+- `config.xml`: minSdk 23, target/compileSdk 35, Kotlin 1.8.22 (avoids duplicate-class conflicts with cordova-android 14.x)
+- iOS builds require macOS + Xcode; Xcode workspace is generated at `platforms/ios/rdzSonde.xcworkspace`
 
 ## Release Process
 
-1. Update version in `package.json`, `config.xml`, and `version.json`
-2. Run `make release` for signed APK (requires `my-release-key.jks.gpg` keystore)
-3. Primary target is Android; Electron for desktop testing
+1. Update the version in `package.json`, `config.xml`, and `version.json`.
+2. `make release` — builds a release APK (`--packageType=apk`), zipaligns, and signs with `my-release-key.jks` (stored gpg-encrypted as `my-release-key.jks.gpg`; decrypt first).
+3. iOS sideloading is distributed via AltStore (`altstore-source.json`, see ALTSTORE.md).
 
-## Key Features
+## CI
 
-- Real-time radiosonde tracking via network connections
-- Offline map support using Mapsforge libraries
-- GPS coordinate conversion (WGS84 to EGM)
-- Cross-platform tile rendering and caching
-- mDNS service discovery for device detection
+GitHub Actions in `.github/workflows/` (documented in `.github/workflows/README.md` and CI_SETUP.md): `ci-full.yml` (security scan + Android + iOS builds on push/PR), `android-build.yml`, `ios-build.yml`, `security-and-quality.yml` (npm audit + code pattern checks, weekly), `release.yml`, `simulator-screenshots.yml`.
 
----
+## iOS Port Status
 
-# iOS PORT PROGRESS REPORT
-
-## ✅ COMPLETED (Phase 1: Foundation Setup)
-
-### iOS Platform Integration (December 2024)
-- **Complete iOS plugin architecture** implemented in `rdzwx-plugin/src/ios/`
-- **Cross-platform compatibility** maintained - both Android and iOS platforms coexist
-- **Plugin installation verified** - all source files correctly integrated
-
-### iOS Native Implementation
-**Core Classes Implemented:**
-- `RdzWx.h/.m` - Main plugin class with all JavaScript interface methods
-- `JsonRdzHandler.h/.m` - TCP networking for TTGO ESP32 communication  
-- `GPSHandler.h/.m` - Core Location integration with proper permissions
-- `MDNSHandler.h/.m` - Bonjour/mDNS service discovery for auto-detection
-- `WgsToEgm.h/.m` - Coordinate conversion (WGS84 to EGM96) with bundled geoid data
-- `OfflineTileCache.h/.m` - Map tile rendering framework (placeholder implementation)
-
-### Features Ready for Testing
-✅ **Network Communication** - TCP socket implementation for JSON-RDZ protocol  
-✅ **GPS Integration** - Core Location with permission handling  
-✅ **mDNS Discovery** - NSNetServiceBrowser for auto-discovery of TTGO devices  
-✅ **Manual Connection** - Direct IP:port connection to TTGO devices  
-✅ **Coordinate Conversion** - Geoid height calculation using bundled WW15MGH.DAC  
-✅ **Plugin Interface** - All JavaScript methods from Android version ported  
-
-### Configuration Complete
-- **iOS Info.plist** configured with required permissions:
-  - `NSLocationWhenInUseUsageDescription`
-  - `NSLocalNetworkUsageDescription` 
-  - `NSBonjourServices` for `_jsonrdz._tcp` discovery
-- **Frameworks** linked: CoreLocation, Network, MapKit
-- **Resource files** bundled: WW15MGH.DAC geoid data
-
-## 🚧 MAJOR REMAINING WORK
-
-### Phase 4: Offline Mapping (Most Complex - 3-4 weeks)
-❌ **Critical Missing Feature** - iOS has no Mapsforge equivalent
-- **Challenge**: Android uses Mapsforge Java libraries for .map file rendering
-- **iOS Options**:
-  1. **Port Mapsforge rendering** to Objective-C/Swift (very complex)
-  2. **Pre-generate tile cache** from .map files on desktop (recommended)
-  3. **Alternative map format** with conversion tools
-- **Current Status**: Placeholder implementation returns empty tiles
-
-### Phase 5: Document Handling (1 week)  
-❌ **File Selection** - iOS document picker for .map file selection
-- Need to implement `UIDocumentPickerViewController` 
-- Handle iOS sandboxing and file access permissions
-- Integrate with offline tile cache system
-
-### Phase 6: Performance & Polish (1-2 weeks)
-❌ **Background Operation** - iOS restrictions on background networking
-❌ **Memory Management** - Optimize for iOS memory constraints  
-❌ **App Store Compliance** - Review iOS App Store guidelines
-
-## 🔥 IMMEDIATE NEXT STEPS
-
-### For iOS Device Testing (Required: macOS + Xcode)
-1. **Open Xcode Project**: `rdzwx-go/platforms/ios/rdzSonde.xcworkspace`
-2. **Build & Deploy** to iOS device
-3. **Test Core Features**:
-   - GPS location services
-   - Manual TTGO connection (IP:port)
-   - JSON data parsing and display
-   - mDNS auto-discovery
-4. **Verify Permissions** - Location and network access prompts
-
-### Expected Test Results
-- ✅ **Basic App Launch** - Plugin loads without crashes
-- ✅ **GPS Functionality** - Location updates with permission prompts  
-- ✅ **Network Communication** - TCP connection to TTGO devices
-- ✅ **Data Processing** - JSON parsing and coordinate conversion
-- ❌ **Offline Maps** - Will show blank/missing tiles (expected)
-
-## 📋 TESTING CHECKLIST
-
-### Hardware Requirements
-- [ ] **TTGO ESP32 device** broadcasting on `_jsonrdz._tcp`
-- [ ] **iOS device** (iPhone/iPad) for testing
-- [ ] **Same WiFi network** for mDNS discovery
-- [ ] **macOS machine** with Xcode installed
-
-### Test Scenarios
-- [ ] App launches without crashing
-- [ ] Location permission prompt appears and works
-- [ ] Network permission prompt appears and works  
-- [ ] Manual IP connection to TTGO succeeds
-- [ ] Auto mDNS discovery finds TTGO device
-- [ ] JSON data from TTGO displays in app
-- [ ] GPS coordinates update and display
-- [ ] Map view loads (will show blank tiles - expected)
-
-### Known Issues to Expect
-- **Offline maps not working** - This is the major remaining work
-- **Document picker placeholder** - File selection returns "not implemented"
-- **Background limitations** - Connection may drop when app backgrounds
-
-## 🎯 STRATEGIC RECOMMENDATIONS
-
-### Short Term (iOS Device Testing)
-1. **Focus on networking** - Verify TTGO communication works
-2. **Test GPS integration** - Ensure location services function properly
-3. **Validate mDNS discovery** - Auto-detection of devices
-
-### Medium Term (Complete iOS Port)  
-1. **Implement offline mapping** - Choose strategy (pre-generation recommended)
-2. **Add document picker** - Enable .map file selection
-3. **Optimize performance** - Memory usage and background operation
-
-### Long Term (Maintenance)
-1. **Maintain dual-platform** compatibility with upstream Android changes
-2. **App Store submission** - iOS deployment pipeline
-3. **Feature parity** - Ensure iOS matches Android capabilities
-
----
-
-**Last Updated**: November 2025
-**Status**: Both iOS and Android builds working on macOS
-**Recent Changes**:
-- Android build fixed for cordova-android 14.x (AIDL, Kotlin 1.8.22, compileSdk 35)
-- iOS build working via `cordova build ios`
-- Environment setup documented in README and CLAUDE.md
+Core features (TCP networking, GPS, mDNS discovery, coordinate conversion, plugin interface) are implemented and building. Offline maps are implemented via raster MBTiles (see OFFLINE_MAPS_IOS.md) rather than Mapsforge `.map` files; map themes (`selstorage("theme")`) are Android-only.

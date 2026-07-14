@@ -106,8 +106,17 @@ jobs:
 
     - name: Build iOS for device (Release, unsigned)
       working-directory: .
-      run: cordova build ios --release --device --verbose
-      continue-on-error: true
+      run: |
+        # xcodebuild's "archive" action requires a signing identity, which
+        # CI doesn't have; a plain "build" with CODE_SIGNING_ALLOWED=NO
+        # produces an unsigned device .app that AltStore/Sideloadly can
+        # re-sign for sideloading.
+        xcodebuild -workspace platforms/ios/rdzSonde.xcworkspace \
+          -scheme rdzSonde -configuration Release \
+          -destination 'generic/platform=iOS' \
+          CODE_SIGNING_ALLOWED=NO \
+          CONFIGURATION_BUILD_DIR="$PWD/platforms/ios/build/device" \
+          build
 
     - name: Capture build logs on failure
       if: failure()
@@ -163,7 +172,7 @@ jobs:
       with:
         name: ios-release-app
         path: platforms/ios/build/device/*.app
-        if-no-files-found: ignore
+        if-no-files-found: error
         retention-days: 30
 
     - name: Run iOS syntax check (xcodebuild)

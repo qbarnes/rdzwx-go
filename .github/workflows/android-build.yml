@@ -14,7 +14,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         submodules: recursive
         token: ${{ secrets.GITHUB_TOKEN }}
@@ -26,7 +26,7 @@ jobs:
         distribution: 'temurin'
 
     - name: Set up Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: '20'
         cache: 'npm'
@@ -88,7 +88,7 @@ jobs:
         find platforms/android -name "*.apk" -type f -exec ls -lh {} \;
 
     - name: Upload Debug APK
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: android-debug-apk
         path: platforms/android/app/build/outputs/apk/debug/*.apk
@@ -96,7 +96,7 @@ jobs:
         retention-days: 30
 
     - name: Upload Release APK (if exists)
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: success() || failure()
       with:
         name: android-release-apk
@@ -110,7 +110,7 @@ jobs:
       continue-on-error: true
 
     - name: Upload lint reports
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: android-lint-report

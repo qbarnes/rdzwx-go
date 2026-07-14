@@ -21,7 +21,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         submodules: recursive
         fetch-depth: 0  # Fetch all history and tags for changelog generation
@@ -41,7 +41,7 @@ jobs:
         fi
 
     - name: Set up Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: '20'
 
@@ -238,7 +238,7 @@ jobs:
         cat altstore-source.json
 
     - name: Upload IPA as artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: release-artifacts
         path: |

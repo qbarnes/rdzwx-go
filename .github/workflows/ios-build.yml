@@ -14,13 +14,13 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         submodules: recursive
         token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Set up Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: '20'
 
@@ -157,7 +157,7 @@ jobs:
       continue-on-error: true
 
     - name: Upload iOS Debug Build
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ios-debug-app
         path: |
@@ -167,7 +167,7 @@ jobs:
         retention-days: 30
 
     - name: Upload iOS Release Build (if exists)
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: success() || failure()
       with:
         name: ios-release-app

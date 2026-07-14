@@ -31,6 +31,7 @@
     </platform>
     <icon src="res/icon512.png"/>
     <platform name="ios">
+        <preference name="deployment-target" value="12.0" />
         <!-- Allow HTTP connections to TTGO devices (equivalent to Android's usesCleartextTraffic) -->
         <edit-config file="*-Info.plist" mode="merge" target="NSAppTransportSecurity">
             <dict>
